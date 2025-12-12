@@ -1,6 +1,8 @@
 # Data directories
 data/
+data
 logs/
+logs
 
 # Python
 __pycache__/
