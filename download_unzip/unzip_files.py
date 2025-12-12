@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Unzip all archives from a source directory into a target directory,
+Unzip archives from a source directory or single zip file into a target directory,
 preserving subfolder structure. 
 
 Usage:
-  python unzip_subfolders.py --source <source_dir> --target <target_dir>
+  python unzip_subfolders.py --source <source_dir_or_zip> --target <target_dir>
   python unzip_subfolders.py  # Uses default directories
 """
 
@@ -30,13 +30,13 @@ DEFAULT_TARGET_DIR = Path("/cfs/earth/scratch/peeb/projects/chirpscan_preprocess
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Unzip all archives from source directory to target directory, preserving subfolder structure."
+        description="Unzip archives from source directory or single zip file to target directory, preserving subfolder structure."
     )
     parser.add_argument(
         "--source",
         type=Path,
         default=DEFAULT_SOURCE_DIR,
-        help=f"Source directory containing zip files (default: {DEFAULT_SOURCE_DIR})"
+        help=f"Source directory containing zip files or path to single zip file (default: {DEFAULT_SOURCE_DIR})"
     )
     parser.add_argument(
         "--target",
@@ -70,33 +70,69 @@ def safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
             zf.extract(member, target_dir)
 
 
-def process_all_zips(source_dir: Path, target_dir: Path) -> None:
+def process_single_zip(zip_path: Path, target_dir: Path, source_base: Path = None) -> None:
     """
-    Process all zip files in source directory and extract to target directory.
-    """
-    if not source_dir.exists():
-        raise FileNotFoundError(f"Source directory not found: {source_dir}")
+    Process a single zip file and extract to target directory.
     
-    # Find all zip files (including in subdirectories)
-    zip_files = list(source_dir.rglob("*.zip"))
+    Args:
+        zip_path: Path to the zip file
+        target_dir: Base target directory
+        source_base: Optional base directory for preserving relative structure
+    """
+    try:
+        # If source_base is provided, preserve relative structure
+        if source_base and source_base.is_dir():
+            relative_path = zip_path.parent.relative_to(source_base)
+            output_dir = target_dir / relative_path / zip_path.stem
+        else:
+            # For single file, just use zip filename as subdirectory
+            output_dir = target_dir / zip_path.stem
+        
+        safe_extract_zip(zip_path, output_dir)
+        logging.info(f"✓ Successfully extracted {zip_path.name}")
+        
+    except Exception as e:
+        logging.error(f"✗ Failed to extract {zip_path.name}: {e}")
+        raise
+
+
+def process_all_zips(source: Path, target_dir: Path) -> None:
+    """
+    Process zip file(s) from source and extract to target directory.
+    
+    Args:
+        source: Path to directory containing zip files OR path to single zip file
+        target_dir: Target directory for extracted files
+    """
+    if not source.exists():
+        raise FileNotFoundError(f"Source not found: {source}")
+    
+    # Check if source is a single zip file
+    if source.is_file():
+        if source.suffix.lower() != '.zip':
+            raise ValueError(f"Source file is not a zip file: {source}")
+        
+        logging.info(f"Processing single zip file: {source.name}")
+        process_single_zip(source, target_dir)
+        return
+    
+    # Source is a directory - find all zip files
+    if not source.is_dir():
+        raise ValueError(f"Source is neither a file nor a directory: {source}")
+    
+    zip_files = list(source.rglob("*.zip"))
     
     if not zip_files:
-        logging.warning(f"No zip files found in {source_dir}")
+        logging.warning(f"No zip files found in {source}")
         return
     
     logging.info(f"Found {len(zip_files)} zip file(s) to extract")
     
     for zip_path in zip_files:
         try:
-            # Create subdirectory structure in target matching source structure
-            relative_path = zip_path.parent.relative_to(source_dir)
-            output_dir = target_dir / relative_path / zip_path.stem
-            
-            safe_extract_zip(zip_path, output_dir)
-            logging.info(f"✓ Successfully extracted {zip_path.name}")
-            
+            process_single_zip(zip_path, target_dir, source_base=source)
         except Exception as e:
-            logging.error(f"✗ Failed to extract {zip_path.name}: {e}")
+            logging.error(f"Continuing with next file...")
             continue
 
 
@@ -107,7 +143,8 @@ def process_all_zips(source_dir: Path, target_dir: Path) -> None:
 def main():
     args = parse_args()
     
-    logging.info(f"Source directory: {args.source}")
+    source_type = "file" if args.source.is_file() else "directory"
+    logging.info(f"Source {source_type}: {args.source}")
     logging.info(f"Target directory: {args.target}")
     logging.info("")
     
