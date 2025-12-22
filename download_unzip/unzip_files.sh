@@ -21,7 +21,7 @@ set -euo pipefail
 # ---------------------- CONFIG ---------------------- #
 
 # Paths
-SOURCE_DIR="/cfs/earth/scratch/peeb/projects/chirpscan_preprocess/data/zip-archives/Kanton_Aargau_zips"
+SOURCE_DIR="/cfs/earth/scratch/peeb/projects/chirpscan_preprocess/data/zip-archives/Kanton_Aargau_zips/Audio 2025 von Bruno.zip"
 TARGET_DIR="/cfs/earth/scratch/peeb/projects/chirpscan_preprocess/data/Kanton_Aargau"
 PY_SCRIPT="/cfs/earth/scratch/peeb/projects/chirpscan_preprocess/download_unzip/unzip_files.py"
 REPO_DIR="/cfs/earth/scratch/peeb/projects/chirpscan_preprocess"

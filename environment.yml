@@ -1,0 +1,29 @@
+name: preprocess_chirpscan
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.12
+
+  # Core scientific stack
+  - numpy
+  - pandas
+  - scipy
+
+  # Audio
+  - librosa
+  - pysoundfile
+
+  # Visualization / UI
+  - panel
+  - holoviews
+  - bokeh
+
+  # CLI / utilities
+  - tqdm
+  - coloredlogs
+
+  # image
+  - matplotlib
+
+  # Keep pip available if needed later
+  - pip

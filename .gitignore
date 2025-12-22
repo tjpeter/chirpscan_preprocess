@@ -4,6 +4,9 @@ data
 logs/
 logs
 
+# environment files
+.env
+
 # Python
 __pycache__/
 *.py[cod]

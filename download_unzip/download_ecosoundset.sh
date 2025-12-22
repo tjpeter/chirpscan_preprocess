@@ -1,5 +1,4 @@
-#!/usr/bin/env bash
-
+#!/bin/bash
 #
 #---------------------- SLURM DIRECTIVES ----------------------#
 #SBATCH --job-name=download_ecosoundset
@@ -7,81 +6,73 @@
 #SBATCH --mail-user=peeb@zhaw.ch
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1
-#SBATCH --time=08:00:00
+#SBATCH --cpus-per-task=2
+#SBATCH --time=48:00:00
 #SBATCH --partition=earth-3
 #SBATCH --constraint=rhel8
-#SBATCH --mem=32G
-#SBATCH --output=download_ecosoundset.%j.out
-#SBATCH --error=download_ecosoundset.%j.err
-#SBATCH --chdir=/cfs/earth/scratch/peeb/jobs/insects
+#SBATCH --mem=8G
+#SBATCH --output=download_ecosoundset.%x.%j.out
+#SBATCH --error=download_ecosoundset.%x.%j.err
+#SBATCH --chdir=/cfs/earth/scratch/peeb/projects/chirpscan_preprocess/logs
 #--------------------------------------------------------------#
 
 set -euo pipefail
 
-# Load environment (USS 2022 stack on RHEL8)
+# ---------------------- CONFIG ---------------------- #
+
+# Paths
+PY_SCRIPT="/cfs/earth/scratch/peeb/projects/chirpscan_preprocess/download_unzip/download_ecosoundset.py"
+REPO_DIR="/cfs/earth/scratch/peeb/projects/chirpscan_preprocess"
+OUTPUT_DIR="/cfs/earth/scratch/icls/shared/icls-02092025-bioacoustics/insects/data/ECOSoundSet"
+
+CONDA_ENV="tl_bioac_mamba"
+
+# Script options (uncomment/modify as needed)
+# VERIFY_ONLY="--verify-only"      # Only verify checksums, don't download
+# NO_EXTRACT="--no-extract"        # Download but don't extract zips
+# CUSTOM_OUT="--out /path/to/dir"  # Override output directory
+
+# ---------------------- ENV ------------------------- #
 module load USS/2022
 module load gcc/9.4.0-pe5.34
-module load unzip/6.0
+module load lsfm-init-miniconda/1.0.0
+module load slurm
 
-# Base data directory
-DATA_DIR="/cfs/earth/scratch/icls/shared/icls-02092025-bioacoustics/insects/data/ECOSoundSet"
-mkdir -p "$DATA_DIR"
+set +u
+eval "$(conda shell.bash hook)"
+conda activate "${CONDA_ENV}"
+set -u
 
-# Files to download
-FILES=(
-  "abiotic_sound_labels.csv"
-  "annotated_audio_segments.csv"
-  "annotated_audio_segments_by_label_summary.csv"
-  "online_recordings_metadata.csv"
-  "recording_metadata.csv"
-  "Split recordings.zip"
-  "Whole recordings.zip"
-)
+export PYTHONPATH="${REPO_DIR}:${PYTHONPATH:-}"
+mkdir -p "${OUTPUT_DIR}"
+mkdir -p "${SLURM_JOB_TMP:-/tmp}"
+mkdir -p "/cfs/earth/scratch/peeb/projects/chirpscan_preprocess/logs"
 
-# Expected MD5s hashes (from Zenodo)
-declare -A MD5S=(
-  ["abiotic_sound_labels.csv"]="e6c71ccb5d4a1de90d1eb72157e833ff"
-  ["annotated_audio_segments.csv"]="b69828e29e5bd90a8c483f9f63c72e13"
-  ["annotated_audio_segments_by_label_summary.csv"]="df7051c08eaf0c0ba553df35db921d60"
-  ["online_recordings_metadata.csv"]="886aae89b619bf106b609b143a2bcfac"
-  ["recording_metadata.csv"]="cb9f9c46591393d81f404acf0c56b2b9"
-  ["Split recordings.zip"]="397f657f60e7f7b199b0ec80230f9773"
-  ["Whole recordings.zip"]="870860bead4eea6249f033e1ec96a5b5"
-)
+# ---------------------- RUN ------------------------- #
+echo "============================================================"
+echo " Job:        ${SLURM_JOB_NAME}  (JobID: ${SLURM_JOB_ID})"
+echo " Host:       $(hostname)"
+echo " Started:    $(date -Is)"
+echo " Output dir: ${OUTPUT_DIR}"
+echo " Conda env:  ${CONDA_ENV}"
+echo " Python:     $(which python3 || true)"
+python3 --version || true
+echo "============================================================"
 
-BASE_URL="https://zenodo.org/records/17086328/files"
+cd "${REPO_DIR}"
 
-for FILENAME in "${FILES[@]}"; do
-  OUT="${DATA_DIR}/${FILENAME}"
+# Run the download script with default settings
+srun python3 "${PY_SCRIPT}" \
+  --out "${OUTPUT_DIR}"
 
-  # Handle URL encoding for filenames with spaces
-  URL_FILENAME="${FILENAME// /%20}"
-  URL="${BASE_URL}/${URL_FILENAME}?download=1"
+# Alternative: run with custom options (uncomment if needed)
+# srun python3 "${PY_SCRIPT}" \
+#   ${VERIFY_ONLY:-} \
+#   ${NO_EXTRACT:-} \
+#   ${CUSTOM_OUT:---out "${OUTPUT_DIR}"}
 
-  echo "=== Downloading: $FILENAME ==="
-  wget -c "$URL" -O "$OUT"
-
-  echo "Verifying MD5 for $FILENAME..."
-  EXPECTED="${MD5S[$FILENAME]}"
-  ACTUAL="$(md5sum "$OUT" | awk '{print $1}')"
-  if [[ "$ACTUAL" != "$EXPECTED" ]]; then
-    echo "MD5 mismatch for $FILENAME"
-    echo "   expected: $EXPECTED"
-    echo "   actual:   $ACTUAL"
-    rm -f "$OUT"
-    exit 1
-  fi
-  echo "MD5 OK"
-
-  if [[ "$FILENAME" == *.zip ]]; then
-    echo "Unzipping $FILENAME..."
-    unzip -o "$OUT" -d "$DATA_DIR"
-    rm -f "$OUT"   # delete zip after extraction
-  fi
-
-  echo "Done: $FILENAME"
-  echo
-done
-
-echo "All downloads, verifications, and extractions completed!"
+STATUS=$?
+echo "------------------------------------------------------------"
+echo " Finished: $(date -Is)  |  Exit code: ${STATUS}"
+echo "============================================================"
+exit "${STATUS}"
