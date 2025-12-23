@@ -290,6 +290,32 @@ def normalized_audio_path(
 
 
 # ----------------------------
+# Color helpers
+# ----------------------------
+
+def build_color_key(
+    df,
+    seg_list,
+    labels=None,
+    cats=None,
+    color_by="label_category",
+    palette_name="Colorblind",
+):
+    ann = df[df.audio_segment_file_name.isin(seg_list)].copy()
+
+    if cats:
+        ann = ann[ann.label_category.isin(cats)]
+    if labels:
+        ann = ann[ann.label.isin(labels)]
+
+    field = "label" if color_by == "label" else "label_category"
+    uniq = sorted(ann[field].astype(str).unique().tolist())
+
+    palette = hv.Cycle(palette_name).values
+    return {k: palette[i % len(palette)] for i, k in enumerate(uniq)}, field
+
+
+# ----------------------------
 # Caching: audio + spec
 # ----------------------------
 @lru_cache(maxsize=256)
@@ -317,6 +343,7 @@ def spec_cached(fname: str):
     return S_db, times, freqs
 
 def make_view(segment: str, labels=None, cats=None, color_by="label_category", 
+              color_key=None, color_field=None,
               vmin=-80, vmax=0, cmap="Greys",
               do_normalize=False, norm_method="rms", target_dbfs=-20, boost_db=0):
     
@@ -357,11 +384,38 @@ def make_view(segment: str, labels=None, cats=None, color_by="label_category",
 
     if rects:
         boxes = hv.Rectangles(
-            rects, kdims=["x0","y0","x1","y1"], vdims=["label","category"]
-        ).opts(
-            fill_alpha=0.25, line_width=2, line_color="red",
-            tools=["hover"], hover_alpha=0.45
+            rects, kdims=["x0","y0","x1","y1"], vdims=["label","label_category"]
         )
+
+        # Use shared mapping if provided; otherwise fall back to per-segment
+        if color_field is None:
+            color_field = "label" if color_by == "label" else "label_category"
+
+        if color_key is None:
+            uniq = sorted(ann[color_field].astype(str).unique().tolist())
+            palette = hv.Cycle("Colorblind").values
+            color_key = {k: palette[i % len(palette)] for i, k in enumerate(uniq)}
+
+        # # choose which field drives color
+        # color_field = "label" if color_by == "label" else "label_category"
+        # uniq = sorted(ann[color_field].astype(str).unique().tolist())
+
+        # # build a stable color key
+        # palette = hv.Cycle("Colorblind").values  # good default categorical palette
+        # color_key = {k: palette[i % len(palette)] for i, k in enumerate(uniq)}
+
+        # map values -> colors
+        color_map = hv.dim(color_field).astype(str).categorize(color_key, default="gray")
+
+        boxes = boxes.opts(
+            fill_alpha=0.25,
+            line_width=2,
+            fill_color=color_map,
+            line_color=color_map,
+            tools=["hover"],
+            hover_alpha=0.45,
+        )
+
         overlay_elements.append(boxes)
 
         text_labels = []
@@ -471,6 +525,16 @@ cmap_widget = pn.widgets.Select(
     value="Greys"
 )
 
+palette_widget = pn.widgets.Select(
+    name="Box palette",
+    options=[
+        "Colorblind", "Category10", "Category20", "Category20b", "Category20c",
+        "Set1", "Set2", "Set3", "Dark2", "Paired", "Accent", "Pastel1", "Pastel2",
+        "Tableau10",
+    ],
+    value="Colorblind",
+)
+
 # normalization widgets 
 normalize_toggle = pn.widgets.Checkbox(name="Normalize playback", value=False)
 
@@ -558,16 +622,30 @@ def pick_random_segments(event=None):
 random_button.on_click(pick_random_segments)
 info = pn.pane.Alert("Tip: select a few segments (2–8). Too many at once will be slow.", alert_type="info")
 
-@pn.depends(segment_pick, label_filter, cat_filter, color_by_widget, 
+@pn.depends(segment_pick, label_filter, cat_filter, color_by_widget, palette_widget,
             vmin_slider, vmax_slider, cmap_widget,
             normalize_toggle, norm_method, target_dbfs, boost_db)
-def grid_view(seg_list, labels, cats, color_by, vmin, vmax, cmap, do_norm, nmeth, tdb, bdb):
-    if not seg_list: return pn.pane.Markdown("Select one or more segments.")
+def grid_view(seg_list, labels, cats, color_by, palette_name, vmin, vmax, cmap, do_norm, nmeth, tdb, bdb):
+    if not seg_list: 
+        return pn.pane.Markdown("Select one or more segments.")
+
     seg_list = seg_list[:MAX_VIEWS]
-    cards = [make_view(s, labels=labels, cats=cats, color_by=color_by, 
-                       vmin=vmin, vmax=vmax, cmap=cmap,
-                       do_normalize=do_norm, norm_method=nmeth,
-                       target_dbfs=tdb, boost_db=bdb) for s in seg_list]
+
+    color_key, color_field = build_color_key(
+        df, seg_list, labels=labels, cats=cats, color_by=color_by,
+        palette_name=palette_name,
+    )
+
+    cards = [
+        make_view(
+            s, labels=labels, cats=cats, color_by=color_by, 
+            vmin=vmin, vmax=vmax, cmap=cmap,
+            do_normalize=do_norm, norm_method=nmeth,
+            target_dbfs=tdb, boost_db=bdb,
+            color_key=color_key, color_field=color_field,
+        ) 
+        for s in seg_list
+    ]
     return pn.GridBox(*cards, ncols=2, sizing_mode="stretch_width")
 
 app = pn.template.FastListTemplate(
@@ -581,7 +659,8 @@ app = pn.template.FastListTemplate(
         box_len_range,
         random_button,
         cat_filter, label_filter, color_by_widget,
-        vmin_slider, vmax_slider, cmap_widget,
+        vmin_slider, vmax_slider, 
+        cmap_widget, palette_widget,
         normalize_toggle, norm_method, target_dbfs, boost_db,
     ],
     main=[grid_view],
