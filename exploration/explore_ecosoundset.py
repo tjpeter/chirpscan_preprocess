@@ -314,6 +314,49 @@ def build_color_key(
     palette = hv.Cycle(palette_name).values
     return {k: palette[i % len(palette)] for i, k in enumerate(uniq)}, field
 
+# ----------------------------
+# Legend pane
+# ----------------------------
+
+def legend_pane_for_segment(ann: pd.DataFrame, color_by: str, color_key: dict, color_field: str):
+    """
+    Legend entries: "label (label_category)" like the box annotations.
+    Colors follow the same mapping used for boxes (by label or by label_category).
+    """
+    if ann.empty or not color_key:
+        return pn.pane.Markdown("")
+
+    # how boxes are colored
+    field_for_color = color_field or ("label" if color_by == "label" else "label_category")
+
+    # unique label/category combos, stable order
+    pairs = (
+        ann[["label", "label_category"]]
+        .astype(str)
+        .drop_duplicates()
+        .sort_values(["label_category", "label"])
+        .itertuples(index=False, name=None)
+    )
+
+    chips = []
+    for lab, cat in pairs:
+        legend_text = f"{lab} ({cat})"
+
+        # color should match boxes (same field used for color mapping)
+        key = lab if field_for_color == "label" else cat
+        c = color_key.get(str(key), "#999999")
+
+        chips.append(
+            f"<span style='display:inline-flex;align-items:center;margin:0 10px 6px 0;'>"
+            f"<span style='width:10px;height:10px;border-radius:2px;"
+            f"background:{c};display:inline-block;margin-right:6px;'></span>"
+            f"<span style='color:{c};font-weight:600;'>{legend_text}</span>"
+            f"</span>"
+        )
+
+    html = "<div style='line-height:1.2; margin-top:6px;'>" + "".join(chips) + "</div>"
+    return pn.pane.HTML(html, sizing_mode="stretch_width")
+
 
 # ----------------------------
 # Caching: audio + spec
@@ -382,6 +425,8 @@ def make_view(segment: str, labels=None, cats=None, color_by="label_category",
         for _, r in ann.iterrows()
     ]
 
+    legend_pane = pn.pane.Markdown("") 
+
     if rects:
         boxes = hv.Rectangles(
             rects, kdims=["x0","y0","x1","y1"], vdims=["label","label_category"]
@@ -406,6 +451,9 @@ def make_view(segment: str, labels=None, cats=None, color_by="label_category",
 
         # map values -> colors
         color_map = hv.dim(color_field).astype(str).categorize(color_key, default="gray")
+
+        # legen d pane
+        legend_pane = legend_pane_for_segment(ann, color_by=color_by, color_key=color_key, color_field=color_field)
 
         boxes = boxes.opts(
             fill_alpha=0.25,
@@ -499,7 +547,7 @@ def make_view(segment: str, labels=None, cats=None, color_by="label_category",
     )
 
     # return pn.Column(header, audio, plot_pane)
-    return pn.Column(header, audio_controls, plot_pane)
+    return pn.Column(header, audio_controls, plot_pane, legend_pane)
 
 # ----------------------------
 # Widgets & Main
