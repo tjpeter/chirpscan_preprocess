@@ -1,6 +1,7 @@
 import os
 from functools import lru_cache
 
+import random
 import numpy as np
 import pandas as pd
 import librosa
@@ -250,6 +251,26 @@ cmap_widget = pn.widgets.Select(
     value="Greys"
 )
 
+# Add a widget to select a random number of segments
+random_n_slider = pn.widgets.IntSlider(
+    name="Random segment count",
+    start=1,
+    end=min(20, len(segments)),
+    value=2,
+    step=1,
+)
+random_button = pn.widgets.Button(name="Pick random segments", button_type="primary")
+
+def pick_random_segments(event=None):
+    n = random_n_slider.value
+    if n > len(segments):
+        n = len(segments)
+    selected = random.sample(segments, n)
+    segment_pick.value = selected
+
+random_button.on_click(pick_random_segments)
+
+
 info = pn.pane.Alert(
     "Tip: select a few segments (2–8). Too many at once will be slow.",
     alert_type="info"
@@ -272,6 +293,8 @@ app = pn.template.FastListTemplate(
     sidebar=[
         info,
         segment_pick,
+        random_n_slider,
+        random_button,
         cat_filter,
         label_filter,
         color_by_widget,  # Updated
