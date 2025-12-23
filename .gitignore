@@ -3,6 +3,7 @@ data/
 data
 logs/
 logs
+.normalized_cache/
 
 # environment files
 .env
