@@ -47,7 +47,7 @@ NORMALIZED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 MAX_FILES_IN_CACHE = 100  # max number of normalized files to keep
 
 # ----------------------------
-# Utils
+# Prune normalized cache
 # ----------------------------
 
 def prune_normalized_cache(max_files: int = 100) -> None:
@@ -62,9 +62,113 @@ def prune_normalized_cache(max_files: int = 100) -> None:
     except Exception as e:
         logging.warning(f"Could not prune normalized cache: {e}")
 
-
+# ----------------------------
 # Prune once on startup so the cache doesn't grow without bound.
 prune_normalized_cache(max_files=MAX_FILES_IN_CACHE)
+# ----------------------------
+
+# ----------------------------
+# Segment filtering/stats
+# ----------------------------
+
+def _segment_stats(labels=None, cats=None, count_mode: str = "boxes") -> pd.DataFrame:
+    """
+    Returns per-segment stats after applying optional label/category filters.
+
+    count_mode:
+      - "boxes": number of annotation rows in the segment
+      - "unique_labels": number of distinct labels in the segment
+    """
+    df = get_df()
+
+    ann = df.copy()
+    if cats:
+        ann = ann[ann.label_category.isin(cats)]
+    if labels:
+        ann = ann[ann.label.isin(labels)]
+
+    # duration of each annotation box (seconds)
+    ann = ann.assign(
+        box_len=(ann["annotation_final_time"].astype(float) - ann["annotation_initial_time"].astype(float))
+    )
+
+    if ann.empty:
+        # Return empty stats but with all segments so we can still "fail gracefully"
+        return pd.DataFrame({
+            "audio_segment_file_name": sorted(df.audio_segment_file_name.unique().tolist()),
+            "n_boxes": 0,
+            "n_unique_labels": 0,
+            "has_box_in_len_range": False,
+        })
+
+    # base per-segment counts
+    g = ann.groupby("audio_segment_file_name", as_index=False)
+    stats = g.agg(
+        n_boxes=("label", "size"),
+        n_unique_labels=("label", pd.Series.nunique),
+    )
+
+    # ensure all segments exist in the stats (segments with 0 matches get 0 counts)
+    all_segments = pd.DataFrame({"audio_segment_file_name": sorted(df.audio_segment_file_name.unique().tolist())})
+    stats = all_segments.merge(stats, on="audio_segment_file_name", how="left").fillna(
+        {"n_boxes": 0, "n_unique_labels": 0}
+    )
+    stats["n_boxes"] = stats["n_boxes"].astype(int)
+    stats["n_unique_labels"] = stats["n_unique_labels"].astype(int)
+
+    return stats
+
+
+def _segments_matching_constraints(
+    labels=None,
+    cats=None,
+    count_mode: str = "boxes",
+    label_count_range: tuple[int, int] = (0, 999999),
+    box_len_range: tuple[float, float] = (0.0, float("inf")),
+) -> list[str]:
+    """
+    Filter segments by:
+      - label_count_range (inclusive)
+      - box_len_range (inclusive): segment must contain at least one annotation box
+        whose duration lies within the range.
+    """
+    df = get_df()
+
+    # Apply filters to annotations for duration test
+    ann = df.copy()
+    if cats:
+        ann = ann[ann.label_category.isin(cats)]
+    if labels:
+        ann = ann[ann.label.isin(labels)]
+    ann = ann.assign(
+        box_len=(ann["annotation_final_time"].astype(float) - ann["annotation_initial_time"].astype(float))
+    )
+
+    # Per-segment counts (after filters)
+    stats = _segment_stats(labels=labels, cats=cats, count_mode=count_mode)
+
+    lo_cnt, hi_cnt = label_count_range
+    if count_mode == "unique_labels":
+        cnt_series = stats["n_unique_labels"]
+    else:
+        cnt_series = stats["n_boxes"]
+
+    ok_cnt = (cnt_series >= lo_cnt) & (cnt_series <= hi_cnt)
+
+    # Per-segment "has any box length within range"
+    lo_len, hi_len = box_len_range
+    if ann.empty:
+        ok_len = pd.Series(False, index=stats.index)
+    else:
+        has_len = (
+            ann.assign(in_range=(ann["box_len"] >= lo_len) & (ann["box_len"] <= hi_len))
+               .groupby("audio_segment_file_name")["in_range"]
+               .any()
+        )
+        ok_len = stats["audio_segment_file_name"].map(has_len).fillna(False)
+
+    ok = ok_cnt & ok_len
+    return stats.loc[ok, "audio_segment_file_name"].tolist()
 
 
 # ----------------------------
@@ -290,7 +394,7 @@ def make_view(segment: str, labels=None, cats=None, color_by="label_category",
 
     #  per-recording volume
     volume_slider = pn.widgets.FloatSlider(
-        name="Vol", start=0.0, end=200.0, step=1.0, value=100.0, width=160
+        name="Vol", start=0.0, end=100.0, step=1.0, value=100.0, width=160
     )
     # Instant client-side link: slider -> this audio player's volume
     volume_slider.jslink(audio, value="volume")
@@ -384,13 +488,71 @@ boost_db = pn.widgets.IntSlider(
     name="Boost (dB)", start=0, end=24, value=0, step=1
 )
 
-random_n_slider = pn.widgets.IntSlider(name="Random segment count", start=1, end=min(20, len(segments)), value=2, step=1)
+random_n_slider = pn.widgets.IntSlider(name="Random segment count", start=1, end=min(50, len(segments)), value=6, step=1)
 random_button = pn.widgets.Button(name="Pick random segments", button_type="primary")
 
+# --- random constraints widgets ---
+count_mode_widget = pn.widgets.Select(
+    name="Count labels as",
+    options={"Annotation boxes": "boxes", "Unique labels": "unique_labels"},
+    value="boxes",
+)
+
+# label/box count range (0..max)
+# Use df from earlier in your script
+_max_boxes = int(df.groupby("audio_segment_file_name").size().max()) if not df.empty else 0
+_max_unique = int(df.groupby("audio_segment_file_name")["label"].nunique().max()) if not df.empty else 0
+max_count_overall = max(_max_boxes, _max_unique, 1)
+
+label_count_range = pn.widgets.IntRangeSlider(
+    name="Required label count range",
+    start=0,
+    end=max_count_overall,
+    value=(0, max_count_overall),
+    step=1,
+)
+
+# box length range (seconds)
+if not df.empty:
+    _dur = (df["annotation_final_time"].astype(float) - df["annotation_initial_time"].astype(float))
+    _dur = _dur.replace([np.inf, -np.inf], np.nan).dropna()
+    max_box_len = float(_dur.max()) if not _dur.empty else 1.0
+else:
+    max_box_len = 1.0
+
+box_len_range = pn.widgets.RangeSlider(
+    name="Required box length range (s)",
+    start=0.0,
+    end=max(1.0, max_box_len),
+    value=(0.0, max(1.0, max_box_len)),
+    step=0.05,
+)
+
+# def pick_random_segments(event=None):
+#     n = random_n_slider.value
+#     if n > len(segments): n = len(segments)
+#     selected = random.sample(segments, n)
+#     segment_pick.value = selected
+
 def pick_random_segments(event=None):
-    n = random_n_slider.value
-    if n > len(segments): n = len(segments)
-    selected = random.sample(segments, n)
+    n = int(random_n_slider.value)
+
+    eligible = _segments_matching_constraints(
+        labels=label_filter.value,
+        cats=cat_filter.value,
+        count_mode=count_mode_widget.value,
+        label_count_range=tuple(label_count_range.value),
+        box_len_range=tuple(box_len_range.value),
+    )
+
+    if not eligible:
+        # fallback: nothing matched -> pick from all segments
+        eligible = segments
+
+    if n > len(eligible):
+        n = len(eligible)
+
+    selected = random.sample(eligible, n) if eligible else []
     segment_pick.value = selected
 
 random_button.on_click(pick_random_segments)
@@ -411,8 +573,14 @@ def grid_view(seg_list, labels, cats, color_by, vmin, vmax, cmap, do_norm, nmeth
 app = pn.template.FastListTemplate(
     title="ECOSoundSet Explorer",
     sidebar=[
-        info, segment_pick, random_n_slider, random_button, 
-        cat_filter, label_filter, color_by_widget, 
+        info,
+        segment_pick,
+        random_n_slider,
+        count_mode_widget,
+        label_count_range,
+        box_len_range,
+        random_button,
+        cat_filter, label_filter, color_by_widget,
         vmin_slider, vmax_slider, cmap_widget,
         normalize_toggle, norm_method, target_dbfs, boost_db,
     ],
